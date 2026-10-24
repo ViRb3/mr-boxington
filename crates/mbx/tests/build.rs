@@ -2310,6 +2310,72 @@ fn eager_incremental_is_opt_in_and_yields_to_verification() {
     }
 }
 
+/// A build script that hands its crate a value through `cargo:rustc-env`
+/// changes what the crate compiles whenever the value changes, as an edit to
+/// its sources would. The crate keeps its private incremental state across
+/// such a change instead of compiling from scratch.
+#[test]
+fn a_changed_build_script_environment_value_counts_as_an_edit() {
+    let store = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let reports = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(project.path().join("src")).unwrap();
+    std::fs::write(
+        project.path().join("Cargo.toml"),
+        "[package]\nname = \"fingerprinted\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("build.rs"),
+        "fn main() {\n    println!(\"cargo:rerun-if-changed=fingerprint.txt\");\n    \
+         let value = std::fs::read_to_string(\"fingerprint.txt\").unwrap();\n    \
+         println!(\"cargo:rustc-env=FINGERPRINT={}\", value.trim());\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/main.rs"),
+        "fn main() {\n    println!(\"{}\", env!(\"FINGERPRINT\"));\n}\n",
+    )
+    .unwrap();
+    std::fs::write(project.path().join("fingerprint.txt"), "0\n").unwrap();
+    generate_lockfile(project.path());
+
+    let cold = build(
+        project.path(),
+        store.path(),
+        &reports.path().join("cold.json"),
+    );
+    assert_eq!(compiled_incrementally(&cold), 0, "{cold}");
+
+    let binary = project.path().join("target/debug/fingerprinted");
+    for revision in 1..=2 {
+        std::fs::write(
+            project.path().join("fingerprint.txt"),
+            format!("{revision}\n"),
+        )
+        .unwrap();
+        let (stats, stderr) = build_with(
+            project.path(),
+            store.path(),
+            &reports.path().join(format!("{revision}.json")),
+            &[],
+        );
+        assert!(
+            compiled_incrementally(&stats) > 0,
+            "revision {revision} should have kept private state: {stats}\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("incremental state was not reused"),
+            "revision {revision}: {stderr}"
+        );
+        let run = Command::new(&binary).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout),
+            format!("{revision}\n")
+        );
+    }
+}
+
 /// A workspace crate somebody is editing misses on every build no matter what
 /// the cache does. On its first edit, it gets its own incremental
 /// state -- which never reaches the store, because it describes one checkout's
