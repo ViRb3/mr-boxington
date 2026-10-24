@@ -2347,7 +2347,10 @@ fn a_changed_build_script_environment_value_counts_as_an_edit() {
     );
     assert_eq!(compiled_incrementally(&cold), 0, "{cold}");
 
-    let binary = project.path().join("target/debug/fingerprinted");
+    let binary = project.path().join(format!(
+        "target/debug/fingerprinted{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     for revision in 1..=2 {
         std::fs::write(
             project.path().join("fingerprint.txt"),
