@@ -2775,8 +2775,12 @@ fn action_from_current_dep_info(
     dep_info: &Path,
 ) -> Result<(ActionCandidates, DiscoveredInputs)> {
     let dep_info = RustcDepInfo::read(dep_info)?;
+    // Discovered first: a crate that cannot be keyed has to say so even when
+    // its environment changed too, or it would miss the churn fallback for
+    // uncacheable crates. A changed environment still refuses the lookup.
+    let action = action_from_parsed_dep_info(compilation, &dep_info)?;
     verify_environment(&dep_info.environment)?;
-    action_from_parsed_dep_info(compilation, &dep_info)
+    Ok(action)
 }
 
 fn action_from_parsed_dep_info(

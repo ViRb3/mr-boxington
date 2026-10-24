@@ -2624,6 +2624,71 @@ fn a_dangling_link_in_a_native_search_path_does_not_stop_the_first_edit_going_in
     });
 }
 
+/// An uncacheable crate whose build script hands it a changed value through
+/// `cargo:rustc-env` counts as edited too, and keeps private state.
+#[cfg(unix)]
+#[test]
+fn a_crate_with_an_unshareable_native_search_path_keeps_state_across_environment_changes() {
+    let store = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let reports = tempfile::tempdir().unwrap();
+    let native = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::write(elsewhere.path().join("libextra.so.1"), b"not a library").unwrap();
+    std::os::unix::fs::symlink(
+        elsewhere.path().join("libextra.so.1"),
+        native.path().join("libextra.so"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(project.path().join("src")).unwrap();
+    std::fs::write(
+        project.path().join("Cargo.toml"),
+        "[package]\nname = \"fingerprinted\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("build.rs"),
+        format!(
+            "fn main() {{\n    println!(\"cargo:rerun-if-changed=fingerprint.txt\");\n    \
+             println!(\"cargo:rustc-link-search=native={}\");\n    \
+             let value = std::fs::read_to_string(\"fingerprint.txt\").unwrap();\n    \
+             println!(\"cargo:rustc-env=FINGERPRINT={{}}\", value.trim());\n}}\n",
+            native.path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/main.rs"),
+        "fn main() {\n    println!(\"{}\", env!(\"FINGERPRINT\"));\n}\n",
+    )
+    .unwrap();
+    std::fs::write(project.path().join("fingerprint.txt"), "0\n").unwrap();
+    generate_lockfile(project.path());
+
+    build(
+        project.path(),
+        store.path(),
+        &reports.path().join("cold.json"),
+    );
+    for revision in 1..=2 {
+        std::fs::write(
+            project.path().join("fingerprint.txt"),
+            format!("{revision}\n"),
+        )
+        .unwrap();
+        let (stats, stderr) = build_with(
+            project.path(),
+            store.path(),
+            &reports.path().join(format!("{revision}.json")),
+            &[],
+        );
+        assert!(
+            compiled_incrementally(&stats) > 0,
+            "revision {revision} should have kept private state: {stats}\n{stderr}"
+        );
+    }
+}
+
 /// The same evidence that turns it on turns it off: once the content stops
 /// moving, the unit compiles normally again and rejoins the shared cache.
 #[test]
